@@ -138,6 +138,67 @@ def test_create_render_data_uses_unique_sdf_safe_render_product_name(monkeypatch
         assert Sdf.Path.IsValidPathString(f"/Render/{name}")
 
 
+def test_create_render_data_pins_render_product_to_spec_cuda_device(monkeypatch):
+    """Tiled RenderProduct buffers are pinned to the CUDA device requested by annotators."""
+    replicator_core_module, syntheticdata_module = _install_omni_stubs(monkeypatch)
+    monkeypatch.setattr(syntheticdata_module, "SyntheticData", MagicMock(), raising=False)
+
+    import isaaclab.sim.utils.stage as stage_utils
+    import isaaclab_physx.renderers.isaac_rtx_renderer as rtx_renderer
+    from isaaclab_physx.renderers.isaac_rtx_renderer_cfg import IsaacRtxRendererCfg
+
+    from pxr import Sdf, UsdGeom
+
+    settings = MagicMock()
+    settings.get.return_value = False
+
+    camera_prim = MagicMock()
+    camera_prim.IsA.side_effect = lambda typ: typ is UsdGeom.Camera
+    device_ids_attr = MagicMock()
+    render_product_prim = MagicMock()
+    render_product_prim.IsValid.return_value = True
+    render_product_prim.CreateAttribute.return_value = device_ids_attr
+    stage = MagicMock()
+    stage.GetPrimAtPath.side_effect = lambda path: {
+        "/World/envs/env_0/Camera": camera_prim,
+        "/Render/rp_test": render_product_prim,
+    }[path]
+
+    rp = MagicMock()
+    rp.path = "/Render/rp_test"
+    replicator_core_module.create = SimpleNamespace(render_product_tiled=MagicMock(return_value=rp))
+    annotator = MagicMock()
+    registry = MagicMock()
+    registry.get_annotator.return_value = annotator
+    replicator_core_module.AnnotatorRegistry = registry
+
+    spec = SimpleNamespace(
+        camera_prim_paths=["/World/envs/env_0/Camera"],
+        device="cuda:1",
+        cfg=SimpleNamespace(
+            data_types=["rgb"],
+            width=64,
+            height=64,
+            isp_cfg=None,
+            colorize_semantic_segmentation=False,
+            colorize_instance_segmentation=False,
+            colorize_instance_id_segmentation=False,
+        ),
+    )
+    renderer = rtx_renderer.IsaacRtxRenderer.__new__(rtx_renderer.IsaacRtxRenderer)
+    renderer.cfg = IsaacRtxRendererCfg()
+
+    with (
+        patch.object(rtx_renderer, "get_settings_manager", return_value=settings),
+        patch.object(rtx_renderer, "get_isaac_sim_version", return_value=version.parse("6.0")),
+        patch.object(stage_utils, "get_current_stage", return_value=stage),
+    ):
+        renderer.create_render_data(spec)
+
+    render_product_prim.CreateAttribute.assert_called_once_with("deviceIds", Sdf.ValueTypeNames.UIntArray)
+    device_ids_attr.Set.assert_called_once_with([1])
+
+
 def test_render_product_uuid_name_format_is_sdf_safe():
     """``rp_{uuid4().hex}`` matches the create_render_data naming contract and is SDF-safe."""
     import uuid

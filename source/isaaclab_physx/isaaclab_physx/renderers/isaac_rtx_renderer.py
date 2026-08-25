@@ -94,6 +94,31 @@ def _camera_semantic_filter_predicate(semantic_filter: str | list[str]) -> str:
     return semantic_filter
 
 
+def _cuda_device_id(device: str) -> int | None:
+    """Return the CUDA device index for ``device``, or ``None`` for CPU devices."""
+    if not device.startswith("cuda"):
+        return None
+    parts = device.split(":")
+    return int(parts[1]) if len(parts) > 1 else 0
+
+
+def _pin_render_product_to_device(stage: Usd.Stage, render_product_path: str, device: str) -> None:
+    """Pin the RenderProduct buffers to the same CUDA device requested by annotators."""
+    device_id = _cuda_device_id(device)
+    if device_id is None:
+        return
+
+    rp_prim = stage.GetPrimAtPath(render_product_path)
+    if rp_prim is None or not rp_prim.IsValid():
+        logger.warning(
+            "create_render_data: render product prim at '%s' not found; deviceIds will not be applied.",
+            render_product_path,
+        )
+        return
+
+    rp_prim.CreateAttribute("deviceIds", Sdf.ValueTypeNames.UIntArray).Set([device_id])
+
+
 @dataclass
 class IsaacRtxRenderData:
     """Render data for Isaac RTX renderer."""
@@ -312,6 +337,7 @@ class IsaacRtxRenderer(BaseRenderer):
             tile_resolution=(spec.cfg.width, spec.cfg.height),
             name=f"rp_{uuid.uuid4().hex}",
         )
+        _pin_render_product_to_device(stage, rp.path, spec.device)
 
         # Apply background color as per-render-product USD attributes so each render product gets its own
         # background without touching the process-wide /rtx/background carb settings.
